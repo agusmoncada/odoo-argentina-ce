@@ -19,22 +19,16 @@ class AccountVatLedger(models.Model):
         "res.company",
         string="Company",
         required=True,
-        readonly=True,
-        states={"draft": [("readonly", False)]},
-        default=lambda self: self.env["res.company"]._company_default_get("account.vat.ledger"),
+        default=lambda self: self.env.company,
     )
     type = fields.Selection([("sale", "Sale"), ("purchase", "Purchase")], required=True)
     date_from = fields.Date(
         string="Start Date",
         required=True,
-        readonly=True,
-        states={"draft": [("readonly", False)]},
     )
     date_to = fields.Date(
         string="End Date",
         required=True,
-        readonly=True,
-        states={"draft": [("readonly", False)]},
     )
     journal_ids = fields.Many2many(
         "account.journal",
@@ -43,22 +37,10 @@ class AccountVatLedger(models.Model):
         "journal_id",
         string="Journals",
         required=True,
-        readonly=True,
-        states={"draft": [("readonly", False)]},
     )
-    first_page = fields.Integer(
-        required=True,
-        readonly=True,
-        states={"draft": [("readonly", False)]},
-    )
-    last_page = fields.Integer(
-        readonly=True,
-        states={"draft": [("readonly", False)]},
-    )
-    presented_ledger = fields.Binary(
-        readonly=True,
-        states={"draft": [("readonly", False)]},
-    )
+    first_page = fields.Integer(required=True)
+    last_page = fields.Integer()
+    presented_ledger = fields.Binary()
     presented_ledger_name = fields.Char()
     state = fields.Selection(
         [("draft", "Draft"), ("presented", "Presented"), ("cancel", "Cancel")],
@@ -113,7 +95,7 @@ class AccountVatLedger(models.Model):
     sequence = fields.Integer(
         default=0,
         required=True,
-        help="Se deberá indicar si la presentación es Original (00) o " "Rectificativa y su orden",
+        help="Se deberá indicar si la presentación es Original (00) o Rectificativa y su orden",
     )
 
     @api.depends("journal_ids", "date_from", "date_to")
@@ -192,42 +174,30 @@ class AccountVatLedger(models.Model):
         # 'period_id.name'
     )
     def _compute_files(self):
-        self.ensure_one()
         # segun vimos aca la afip espera "ISO-8859-1" en vez de utf-8
         # http://www.planillasutiles.com.ar/2015/08/
         # como-descargar-los-archivos-de.html
-        if self.REGINFO_CV_ALICUOTAS:
-            self.aliquots_filename = _("Alicuots_%s_%s.txt") % (
-                self.type,
-                self.date_to,
-                # self.period_id.name
-            )
-            self.aliquots_file = base64.encodestring(self.REGINFO_CV_ALICUOTAS.encode("ISO-8859-1"))
-        else:
-            self.aliquots_file = False
-            self.aliquots_filename = False
-        if self.REGINFO_CV_COMPRAS_IMPORTACIONES:
-            self.import_aliquots_filename = _("Import_Alicuots_%s_%s.txt") % (
-                self.type,
-                self.date_to,
-                # self.period_id.name
-            )
-            self.import_aliquots_file = base64.encodestring(self.REGINFO_CV_COMPRAS_IMPORTACIONES.encode("ISO-8859-1"))
-        else:
-            self.import_aliquots_file = False
-            self.import_aliquots_filename = False
-        if self.REGINFO_CV_CBTE:
-            self.vouchers_filename = _("Vouchers_%s_%s.txt") % (
-                self.type,
-                self.date_to,
-                # self.period_id.name
-            )
-            self.vouchers_file = base64.encodestring(self.REGINFO_CV_CBTE.encode("ISO-8859-1"))
-        else:
-            self.vouchers_file = False
-            self.vouchers_filename = False
+        for rec in self:
+            for content_field, file_field, name_field, prefix in (
+                ("REGINFO_CV_ALICUOTAS", "aliquots_file", "aliquots_filename", "Alicuots"),
+                (
+                    "REGINFO_CV_COMPRAS_IMPORTACIONES",
+                    "import_aliquots_file",
+                    "import_aliquots_filename",
+                    "Import_Alicuots",
+                ),
+                ("REGINFO_CV_CBTE", "vouchers_file", "vouchers_filename", "Vouchers"),
+            ):
+                content = rec[content_field]
+                if content:
+                    rec[name_field] = "%s_%s_%s.txt" % (prefix, rec.type, rec.date_to)
+                    rec[file_field] = base64.encodebytes(content.encode("ISO-8859-1", errors="replace"))
+                else:
+                    rec[file_field] = False
+                    rec[name_field] = False
 
     def compute_txt_data(self):
+        self.ensure_one()
         alicuotas = self._get_REGINFO_CV_ALICUOTAS()
         # sacamos todas las lineas y las juntamos
         lines = []
@@ -294,13 +264,13 @@ class AccountVatLedger(models.Model):
             # si no existe la factura en alicuotas es porque no tienen ninguna
             cant_alicuotas = len(alicuotas.get(inv))
 
-            currency_rate = inv.invoice_currency_rate
+            currency_rate = inv._l10n_ar_vat_book_currency_rate()
             currency_code = inv.currency_id.l10n_ar_afip_code
 
             invoice_number, pos_number = self._get_pos_and_invoice_invoice_number(inv)
             doc_code, doc_number = self._get_partner_document_code_and_number(inv.partner_id)
 
-            amounts = inv._l10n_ar_get_amounts(company_currency=True)
+            amounts = inv._l10n_ar_vat_book_get_amounts(company_currency=True)
             amount_total = (1 if inv.is_inbound() else -1) * inv.amount_total_signed
             vat_amount = amounts["vat_amount"]
             vat_exempt_base_amount = amounts["vat_exempt_base_amount"]
@@ -578,7 +548,7 @@ class AccountVatLedger(models.Model):
             invoices = self._get_txt_invoices().filtered(lambda r: r.l10n_latam_document_type_id.code != "66")
         for inv in invoices:
             lines = []
-            vat_taxes = inv._get_vat()
+            vat_taxes = inv._l10n_ar_vat_book_get_vat()
 
             # tipically this is for invoices with zero amount
             if not vat_taxes and inv.l10n_latam_document_type_id.purchase_aliquots == "not_zero":
