@@ -240,9 +240,18 @@ class AccountVatLedger(models.Model):
         return doc_code, doc_number.rjust(20, "0")
 
     @api.model
+    @api.model
+    def _get_document_number(self, invoice):
+        """Numero de documento sin los sufijos que se agregan para forzar unicidad del nombre
+        del asiento: ' (xx)' (ADHOC/l10n_ar_ux) y ' [id]' (deduplicacion de nombres al migrar a 18).
+        En 16 esos sufijos no existian, asi que el TXT queda igual que en 16."""
+        number = invoice.l10n_latam_document_number or ""
+        return re.sub(r"\s*[\[(].*$", "", number)
+
+    @api.model
     def _get_pos_and_invoice_invoice_number(self, invoice):
         res = invoice._l10n_ar_get_document_number_parts(
-            invoice.l10n_latam_document_number, invoice.l10n_latam_document_type_id.code
+            self._get_document_number(invoice), invoice.l10n_latam_document_type_id.code
         )
         return "{:0>20d}".format(res["invoice_number"]), "{:0>5d}".format(res["point_of_sale"])
 
@@ -327,7 +336,7 @@ class AccountVatLedger(models.Model):
             else:
                 # Campo 5: Despacho de importación
                 if inv.l10n_latam_document_type_id.code == "66":
-                    row.append((inv.l10n_latam_document_number).rjust(16, "0"))
+                    row.append(self._get_document_number(inv).rjust(16, "0"))
                 else:
                     row.append("".rjust(16, " "))
 
@@ -502,7 +511,7 @@ class AccountVatLedger(models.Model):
         elif impo:
             row = [
                 # Campo 1: Despacho de importación.
-                (inv.l10n_latam_document_number or inv.name or "").rjust(16, "0"),
+                (self._get_document_number(inv) or inv.name or "").rjust(16, "0"),
                 # Campo 2: Importe Neto Gravado
                 self.format_amount(base),
                 # Campo 3: Alícuota de IVA
